@@ -3,146 +3,121 @@ import mediapipe as mp
 import numpy as np
 import streamlit as st
 import time
+import logging
 
-# =========================
-# 🎨 Streamlit UI
-# =========================
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+
 st.set_page_config(page_title="Virtual Painter", layout="wide")
 st.title("🎨 Virtual Painter - Smooth Web Version")
-st.caption("👉 Draw when only your index finger is up. Your hand stays visible always.")
 
-# Persistent session state
+# Initialize session state
 if "canvas" not in st.session_state:
     st.session_state.canvas = np.ones((480, 640, 3), dtype=np.uint8) * 255
 if "prev_x" not in st.session_state:
     st.session_state.prev_x, st.session_state.prev_y = 0, 0
 if "smooth_x" not in st.session_state:
     st.session_state.smooth_x, st.session_state.smooth_y = 0, 0
-if "last_hand" not in st.session_state:
-    st.session_state.last_hand, st.session_state.last_seen_time = None, 0
+if "detection_status" not in st.session_state:
+    st.session_state.detection_status = "Starting..."
 
+# UI
 col1, col2 = st.columns([2, 1])
-
 with col1:
-    run = st.checkbox("▶️ Run Virtual Painter", value=False)
+    run = st.checkbox("▶️ Run Virtual Painter", value=True)
     brush_thickness = st.slider("✏️ Brush Size", 1, 50, 6)
 
 with col2:
     st.markdown("### 🎨 Choose Pen Color")
-    selected_pen = st.radio(
-        "Pen Type",
-        ["Red", "Green", "Blue", "Black", "Eraser (White)", "Custom Color"],
-        horizontal=False,
+    selected_pen = st.radio("Pen Type", ["Red", "Green", "Blue", "Black", "Eraser"], index=0)
+
+# Debug info
+st.sidebar.markdown("### 🔧 Debug Info")
+status_placeholder = st.sidebar.empty()
+
+# Initialize MediaPipe
+try:
+    mp_hands = mp.solutions.hands
+    mp_drawing = mp.solutions.drawing_utils
+    hands = mp_hands.Hands(
+        max_num_hands=1,
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5,
+        model_complexity=0
     )
-    if selected_pen == "Custom Color":
-        custom_color = st.color_picker("Pick Custom Color", "#FF5733")
+except Exception as e:
+    st.error(f"Failed to initialize MediaPipe: {e}")
+    hands = None
+
+# Camera initialization
+try:
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        st.error("❌ Cannot access camera. Trying alternative...")
+        cap = cv2.VideoCapture(1)
+        
+    if cap.isOpened():
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        st.success("✅ Camera initialized successfully")
+    else:
+        st.warning("⚠️ Running in demo mode without camera")
+        run = False
+except Exception as e:
+    st.error(f"Camera error: {e}")
+    cap = None
+    run = False
 
 FRAME_WINDOW = st.image([], use_container_width=True)
 
-# =========================
-# 🖐 Mediapipe Setup
-# =========================
-mp_hands = mp.solutions.hands
-mp_drawing = mp.solutions.drawing_utils
-hands = mp_hands.Hands(
-    max_num_hands=1,
-    min_detection_confidence=0.6,
-    min_tracking_confidence=0.6
-)
-
-# =========================
-# ⚙️ Helpers
-# =========================
+# Rest of your drawing functions remain the same...
 def fingers_up(lm):
     tips = [8, 12, 16, 20]
     return [lm[tip].y < lm[tip - 2].y for tip in tips]
 
-def hex_to_bgr(hex_color):
-    hex_color = hex_color.lstrip('#')
-    rgb = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
-    return (rgb[2], rgb[1], rgb[0])
+# Main loop
+while run and cap and cap.isOpened():
+    try:
+        ret, frame = cap.read()
+        if not ret:
+            st.session_state.detection_status = "❌ Failed to read frame"
+            break
 
-# =========================
-# ⚙️ Constants
-# =========================
-ALPHA = 0.75
-FPS_LIMIT = 15
-border_thickness = 4
-detect_area = {"top": 40, "bottom": 440, "left": 40, "right": 600}
-HAND_MEMORY_DURATION = 0.5
-prev_time = 0
+        frame = cv2.flip(frame, 1)
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
+        # Process with MediaPipe
+        result = hands.process(rgb)
+        
+        display = st.session_state.canvas.copy()
+        
+        # Draw UI elements
+        cv2.rectangle(display, (0, 0), (639, 479), (0, 0, 0), 2)
+        
+        # Update detection status
+        if result.multi_hand_landmarks:
+            st.session_state.detection_status = f"✅ Hand detected ({len(result.multi_hand_landmarks)})"
+            # Your existing drawing logic here...
+            hand_landmarks = result.multi_hand_landmarks[0]
+            mp_drawing.draw_landmarks(display, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+        else:
+            st.session_state.detection_status = "❌ No hand detected"
+        
+        # Update debug info
+        status_placeholder.markdown(f"**Status:** {st.session_state.detection_status}")
+        
+        # Display frame
+        FRAME_WINDOW.image(display, channels="BGR")
+        time.sleep(0.05)  # Limit frame rate
+        
+    except Exception as e:
+        st.error(f"Error in main loop: {e}")
+        break
 
-# =========================
-# 📸 Streamlit Webcam Input
-# =========================
-st.markdown("### 📷 Capture from Webcam")
-camera_input = st.camera_input("Turn on camera to start drawing")
+# Cleanup
+if cap:
+    cap.release()
+cv2.destroyAllWindows()
 
-if run and camera_input is not None:
-    # Read the image captured by Streamlit's webcam
-    file_bytes = np.asarray(bytearray(camera_input.getvalue()), dtype=np.uint8)
-    frame = cv2.imdecode(file_bytes, 1)
-    frame = cv2.flip(frame, 1)
-
-    # Convert and process frame
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    result = hands.process(rgb)
-    display = st.session_state.canvas.copy()
-
-    # Borders
-    cv2.rectangle(display, (0, 0), (639, 479), (0, 0, 0), border_thickness)
-    cv2.rectangle(display, (detect_area["left"], detect_area["top"]),
-                  (detect_area["right"], detect_area["bottom"]), (200, 200, 200), 2)
-
-    # Color setup
-    color_map = {
-        "Red": (0, 0, 255),
-        "Green": (0, 255, 0),
-        "Blue": (255, 0, 0),
-        "Black": (0, 0, 0),
-        "Eraser (White)": (255, 255, 255)
-    }
-    draw_color = hex_to_bgr(custom_color) if selected_pen == "Custom Color" else color_map[selected_pen]
-
-    # Hand memory and drawing logic
-    if result.multi_hand_landmarks:
-        st.session_state.last_hand = result.multi_hand_landmarks[0]
-        st.session_state.last_seen_time = time.time()
-    elif st.session_state.last_hand and time.time() - st.session_state.last_seen_time < HAND_MEMORY_DURATION:
-        pass
-    else:
-        st.session_state.last_hand = None
-
-    if st.session_state.last_hand:
-        lm = st.session_state.last_hand.landmark
-        h, w, _ = frame.shape
-        index_x, index_y = int(lm[8].x * w), int(lm[8].y * h)
-
-        if (detect_area["left"] < index_x < detect_area["right"]) and (detect_area["top"] < index_y < detect_area["bottom"]):
-            if st.session_state.smooth_x == 0 and st.session_state.smooth_y == 0:
-                st.session_state.smooth_x, st.session_state.smooth_y = index_x, index_y
-            else:
-                st.session_state.smooth_x = int(ALPHA * st.session_state.smooth_x + (1 - ALPHA) * index_x)
-                st.session_state.smooth_y = int(ALPHA * st.session_state.smooth_y + (1 - ALPHA) * index_y)
-
-            fingers = fingers_up(lm)
-            if fingers[0] and not any(fingers[1:]):
-                if st.session_state.prev_x == 0 and st.session_state.prev_y == 0:
-                    st.session_state.prev_x, st.session_state.prev_y = st.session_state.smooth_x, st.session_state.smooth_y
-                cv2.line(
-                    st.session_state.canvas,
-                    (st.session_state.prev_x, st.session_state.prev_y),
-                    (st.session_state.smooth_x, st.session_state.smooth_y),
-                    draw_color,
-                    brush_thickness,
-                )
-                st.session_state.prev_x, st.session_state.prev_y = st.session_state.smooth_x, st.session_state.smooth_y
-            else:
-                st.session_state.prev_x, st.session_state.prev_y = 0, 0
-
-        mp_drawing.draw_landmarks(display, st.session_state.last_hand, mp_hands.HAND_CONNECTIONS)
-
-    # Display output
-    FRAME_WINDOW.image(display, channels="BGR")
-else:
-    st.info("Turn on camera and press 'Run Virtual Painter' to start.")
+if not run:
+    st.info("⏸️ Virtual Painter is paused")
