@@ -11,7 +11,7 @@ st.set_page_config(page_title="Virtual Painter", layout="wide")
 st.title("🎨 Virtual Painter - Smooth Web Version")
 st.caption("👉 Draw when only your index finger is up. Your hand stays visible always.")
 
-# Initialize persistent session state
+# Persistent session state
 if "canvas" not in st.session_state:
     st.session_state.canvas = np.ones((480, 640, 3), dtype=np.uint8) * 255
 if "prev_x" not in st.session_state:
@@ -24,7 +24,7 @@ if "last_hand" not in st.session_state:
 col1, col2 = st.columns([2, 1])
 
 with col1:
-    run = st.checkbox("▶️ Run Virtual Painter", value=True)
+    run = st.checkbox("▶️ Run Virtual Painter", value=False)
     brush_thickness = st.slider("✏️ Brush Size", 1, 50, 6)
 
 with col2:
@@ -51,14 +51,6 @@ hands = mp_hands.Hands(
 )
 
 # =========================
-# 📸 Camera Setup
-# =========================
-canvas_h, canvas_w = 480, 640
-cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, canvas_w)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, canvas_h)
-
-# =========================
 # ⚙️ Helpers
 # =========================
 def fingers_up(lm):
@@ -76,31 +68,33 @@ def hex_to_bgr(hex_color):
 ALPHA = 0.75
 FPS_LIMIT = 15
 border_thickness = 4
-detect_area = {"top": 40, "bottom": canvas_h - 40, "left": 40, "right": canvas_w - 40}
+detect_area = {"top": 40, "bottom": 440, "left": 40, "right": 600}
 HAND_MEMORY_DURATION = 0.5
 prev_time = 0
 
 # =========================
-# 🖊 Main Loop
+# 📸 Streamlit Webcam Input
 # =========================
-while run:
-    ret, frame = cap.read()
-    if not ret:
-        st.warning("⚠️ Camera not detected.")
-        break
+st.markdown("### 📷 Capture from Webcam")
+camera_input = st.camera_input("Turn on camera to start drawing")
 
+if run and camera_input is not None:
+    # Read the image captured by Streamlit's webcam
+    file_bytes = np.asarray(bytearray(camera_input.getvalue()), dtype=np.uint8)
+    frame = cv2.imdecode(file_bytes, 1)
     frame = cv2.flip(frame, 1)
+
+    # Convert and process frame
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     result = hands.process(rgb)
-
     display = st.session_state.canvas.copy()
 
-    # 🎯 Draw borders
-    cv2.rectangle(display, (0, 0), (canvas_w - 1, canvas_h - 1), (0, 0, 0), border_thickness)
+    # Borders
+    cv2.rectangle(display, (0, 0), (639, 479), (0, 0, 0), border_thickness)
     cv2.rectangle(display, (detect_area["left"], detect_area["top"]),
                   (detect_area["right"], detect_area["bottom"]), (200, 200, 200), 2)
 
-    # 🖍 Color
+    # Color setup
     color_map = {
         "Red": (0, 0, 255),
         "Green": (0, 255, 0),
@@ -110,7 +104,7 @@ while run:
     }
     draw_color = hex_to_bgr(custom_color) if selected_pen == "Custom Color" else color_map[selected_pen]
 
-    # ✅ Hand memory logic
+    # Hand memory and drawing logic
     if result.multi_hand_landmarks:
         st.session_state.last_hand = result.multi_hand_landmarks[0]
         st.session_state.last_seen_time = time.time()
@@ -119,7 +113,6 @@ while run:
     else:
         st.session_state.last_hand = None
 
-    # 🖐 Drawing
     if st.session_state.last_hand:
         lm = st.session_state.last_hand.landmark
         h, w, _ = frame.shape
@@ -149,11 +142,7 @@ while run:
 
         mp_drawing.draw_landmarks(display, st.session_state.last_hand, mp_hands.HAND_CONNECTIONS)
 
-    # 🕒 Update Streamlit frame
-    now = time.time()
-    if now - prev_time > 1 / FPS_LIMIT:
-        FRAME_WINDOW.image(display, channels="BGR")
-        prev_time = now
-
-cap.release()
-st.write("🛑 Stopped.")
+    # Display output
+    FRAME_WINDOW.image(display, channels="BGR")
+else:
+    st.info("Turn on camera and press 'Run Virtual Painter' to start.")
